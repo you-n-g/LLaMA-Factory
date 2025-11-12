@@ -113,8 +113,65 @@ class CustomSeq2SeqTrainer(Seq2SeqTrainer):
         return super()._get_train_sampler(*args, **kwargs)
 
     @override
-    def compute_loss(self, model, inputs, *args, **kwargs):
-        return super().compute_loss(model, inputs, *args, **kwargs)
+    def compute_loss(self, model, inputs, return_outputs=False, *args, **kwargs):
+
+        # 获取模型输出
+        outputs = model(**inputs)
+        logits = outputs.logits
+        logits = logits[..., :-1, :].contiguous()
+        labels = inputs["labels"]
+        labels = labels[..., 1:].contiguous()
+        input_ids = inputs["input_ids"]
+        attention_mask = inputs["attention_mask"]
+
+        # 获取 </think> 的 token ID
+        think_end_token = self.processing_class.convert_tokens_to_ids("</think>")
+
+        # 初始化权重矩阵（默认权重为 0，忽略无效位置）
+        batch_size, seq_len = labels.shape
+        weights = torch.zeros_like(labels, dtype=torch.float32)
+
+        for i in range(batch_size):
+            # 获取当前样本的 input_ids 和 attention_mask
+            sample_input_ids = input_ids[i]
+            # sample_mask = attention_mask[i]
+            sample_label = labels[i]
+
+            # 找到有效 token 的位置（排除 padding）
+            # valid_indices = (sample_mask == 1).nonzero(as_tuple=True)[0]
+            valid_indices = (sample_label != -100).nonzero(as_tuple=True)[0]
+            # print('valid_indices=', valid_indices)
+
+            # 在有效 token 中查找 </think> 的位置
+            try:
+                # 查找第一个 </think> 的位置（假设每个样本只有一个）
+                think_end_pos = (sample_input_ids[valid_indices] == think_end_token).nonzero()[0].item()
+
+            except IndexError:
+                # 若未找到 </think>，全部视为答案部分（权重 1.0）
+                weights[i][valid_indices] = 1.0
+                continue
+
+            # 分割思考部分和答案部分
+            think_part = valid_indices[:think_end_pos + 1]  # 包含 </think>
+            answer_part = valid_indices[think_end_pos + 1:]  # 答案部分
+            print('think_part=', think_part, 'answer_part=', answer_part)
+
+            # 设置权重（思考部分 0.8，答案部分 1.0）
+            weights[i][think_part] = 0.1
+            weights[i][answer_part] = 1.0
+
+        # 计算加权损失（仅 labels != -100 的位置参与计算）
+        loss = F.cross_entropy(
+            logits.view(-1, logits.size(-1)),
+            labels.view(-1),
+            reduction="none",
+            ignore_index=-100  # 自动忽略 labels=-100 的位置
+        ).view(batch_size, seq_len)
+
+        # 应用权重矩阵并归一化
+        weighted_loss = (loss * weights).sum() / weights.sum()
+        return (weighted_loss, logits) if return_outputs else weighted_loss
 
     @override
     def prediction_step(
