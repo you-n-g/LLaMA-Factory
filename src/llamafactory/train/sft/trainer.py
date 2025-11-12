@@ -156,7 +156,7 @@ class CustomSeq2SeqTrainer(Seq2SeqTrainer):
             # 分割思考部分和答案部分
             think_part = valid_indices[:think_end_pos + 1]  # 包含 </think>
             answer_part = valid_indices[think_end_pos + 1:]  # 答案部分
-            print('think_part=', think_part, 'answer_part=', answer_part)
+            # print('think_part=', think_part, 'answer_part=', answer_part)
 
             # 设置权重（思考部分 0.8，答案部分 1.0）
             weights[i][think_part] = 0.1
